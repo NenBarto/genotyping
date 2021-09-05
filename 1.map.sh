@@ -3,6 +3,10 @@ conda activate enviroDNA
 
 #mapping to OTU3 as the most common OTU of length 282, named mhc282
 #bwa index -p mhc282 -a is mhc282.fasta
+#reference should be created with gatk
+#gatk-launch CreateSequenceDictionary -R ref.fasta
+#singularity exec --bind $annotationDir:/annotationDir $GATKimage gatk CreateSequenceDictionary -R /annotationDir/$REFERENCE
+
 
 #to do
 #GATK
