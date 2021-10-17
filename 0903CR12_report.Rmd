@@ -1,0 +1,501 @@
+---
+title: "0903CR12 Spotted Tree Frogs Report"
+output:
+  html_document: 
+    df_print: paged
+runtime: shiny
+---
+Report:                 0903CR12_Spotted_Tree_Frogs_report_12_1
+Data received:          16/08/21\
+Data type:              MiSeq\
+Raw data:               160921_MiSeq_NB #place in dropbox\
+Processing:             vsearch_pipeline_v5TEST.sh (v.270821)\
+Number of samples:      376 individuals \
+Number of controls:     8 \
+
+```{r include = FALSE}
+library(BiocManager)
+getOption("repos")
+library(ggplot2)
+library(reshape2)
+library(shiny)
+library(ShortRead)
+library(Biostrings)
+library(vcfR)
+library(Rsamtools)
+library(knitr)
+library(kableExtra)
+library(adegenet)
+#library(dartR)
+library(ggalluvial)
+library(pegas)
+library(ape)
+library(RColorBrewer)
+library(ggmap)
+library(scatterpie)
+library(msaR)
+library(vegan)
+library(pheatmap)
+
+#directory structure
+homedir<-"~/projects/CESAR/"
+projectname<-"0903CR12_Spotted_tree_frogs"
+projectdir<-paste0(homedir,projectname)
+RobjectsDir<-paste0(projectdir,"/results/Robjects/")
+system(paste0("mkdir -p ",RobjectsDir))
+annotationDir<-paste0(projectdir,"/annotation/")
+tableDir<-paste0(projectdir,"/results/tables/")
+system(paste0("mkdir -p ",tableDir))
+figDir<-paste0(projectdir,"/results/figures/")
+system(paste0("mkdir -p ",figDir))
+#setwd("~/projects/CESAR/0903CR12_Spotted_tree_frogs/reports")
+
+opts_chunk$set(error = TRUE)
+```
+
+METHODS:
+
+Read processing with vsearch
+
+After sequencing the libraries on MiSeq, the resulting FASTQ files of overlapping paired-end reads were first truncated (fastq_truncee) so that their total expected error is not higher than 2, concatenated with minimal length of overlap of 10 nucleotides without allowed mismatches and cleaned from adapters allowing <0.2 error rate with vsearch (v2.17.1). Reads were then dereplicated with vsearch into FASTA files discarding those with fewer than 10 replicates, and clustered into OTUs. 
+
+Calling genotypes with GATK
+
+In order to distinguish between sequencing errors and real SNPs we used the GATK pipeline (v4.2.2.0). Previously trimmed and filtered reads were deduplicated with usearch (v.11.0.667) to preserve the quality information in FASTQ format. Reads were then mapped with BWA (v. 0.7.17-r1188) to the most common OTU and sample SNPs were called with GATK HaplotypeCaller. Joint genotyping across all samples was performed with GATK function GenotypeGVCFs with default parameters. SNPs were filtered with vcftools (v.0.1.16) with the minimal allele count greater than 3 (--mac 3), quality above 30 (--minQ 30), depth larger than 10 (--minDP 10), excluding sites with >95% missing data and with smaller minor allele frequency than 0.05 (--maf 0.05).
+
+Analysis
+
+Analysis was performed with R (v.4.1.1) with custom scripts available at 
+
+RESULTS:
+
+Basic metrics of the OTUs (total reads per OTU, number of OTUs per sample) show that there is \
+1. a larger than expected diversity. The vast majority of unique OTUs have fewer than 100 reads. Technical issues or somatic mutations \
+2. two classes of OTUs: a) low abundant diverse b) highly abundant ubiquitous
+
+```{r warning = FALSE, message=FALSE,include=F}
+#import dataset
+inFile<-paste0(projectdir,"/results/derep_mhc/size10-sintax0.95/all.otutab.txt")
+data=read.table(inFile,header=T,row.names=1,sep="\t")
+dataM<-unlist(data)
+p<-qplot(dataM)+geom_histogram()
+p<-p+scale_x_log10()
+p<-p+scale_y_log10()
+p<-p+ggtitle("Distribution of unique OTUs per sample")
+p<-p+xlab("Count of unique OTUs")
+p
+```
+
+\
+The average number of individual unique OTUs per sample is about 60. Increasing the threshold for the depth reduces the number of alleles to a smaller number, though the optimal threshold is inconclusive.
+
+
+```{r warning = FALSE, message=FALSE, echo=FALSE}
+sliderInput("cutoff", "Reads cutoff:", 50, min = 10, max = 200)
+
+renderPlot({
+  #select data based on the cutoff
+  dataShort<-apply(data,2,function(x){length(x[x>input$cutoff])})
+  
+  p<-qplot(dataShort)+geom_bar()
+	p<-p+scale_y_log10()
+	p<-p+xlab("OTU count per sample")
+	p
+  
+})
+```
+
+The majority of the OTUs are of length 282 (92.3%) without a bimodal distribution in length that might point to multiple versions of MHC.
+
+```{r warning = FALSE, message=FALSE, include=F}
+OUTfasta<-readDNAStringSet(paste0(projectdir,"/results/derep_mhc/size10-sintax0.95/all.otus.fasta"))
+table(width(OUTfasta))
+```
+
+When we extract only the top and bottom 50 OTUs by abundance, it turns out that the majority of the difference lies in technical errors. 
+
+```{r warning = FALSE, message=FALSE, include=F}
+topOTUs<-names(sort(rowSums(data),decreasing=T))[1:52]
+OUTfastaShort<-OUTfasta[width(OUTfasta)==282]
+OUTfastaShort<-OUTfastaShort[gsub(";.*","",names(OUTfastaShort)) %in% topOTUs]
+writeXStringSet(OUTfastaShort,"top50OTUs.fa")
+
+bottomOTUs<-names(sort(rowSums(data)))[1:52]
+OUTfastaShort<-OUTfasta[width(OUTfasta)==282]
+OUTfastaShort<-OUTfastaShort[gsub(";.*","",names(OUTfastaShort)) %in% bottomOTUs]
+writeXStringSet(OUTfastaShort,"bottom50OTUs.fa")
+```
+
+Next we looked at the number of OTUs before filtering in time and over populations. The largest diversity was as expected for the oldest samples, but the most recent ones had a high number too, with the median of 287. Some populations were more dispersed, such as Goulburn and Howqua (old samples), compared to Taponga or Dargo.
+
+
+```{r warning = FALSE, message=FALSE, include=F}
+#insert metadata
+md<-read.csv("../metadata/DLit21-5918_metadata_MW.csv")
+md<-read.csv(paste0(projectdir,"/metadata/DART_Plate_4_metadata.csv"))
+sampleNames<-colnames(data)
+sampleNames<-gsub("^X","",sampleNames)
+sampleNamesShort<-gsub("_.*","",sampleNames)
+sampleNamesShort<-sampleNamesShort[!grepl("negative",sampleNamesShort)]
+tableSamples<-table(sampleNamesShort)
+dups<-names(tableSamples)[tableSamples>1]
+for(dup in dups){
+
+  sampleNames[grepl(paste0(dup,"_2"),sampleNames)]=paste0(dup,"b")
+  sampleNames[grepl(paste0(dup,"_S"),sampleNames)]=paste0(dup,"a")
+}
+
+sampleNames<-gsub("_S.*","",sampleNames)
+sampleNames[!sampleNames %in% md$Genotype]
+
+colnames(data)<-sampleNames
+dataS<-data
+dataS$OTU<-row.names(dataS)
+dataM<-melt(dataS)
+mdS<-md[,c(6,9,10,11,15,16)]
+dataM<-dataM[dataM$value>0,]
+#count the number of OTUs per sample
+colnames(dataM)<-c("OTU","sampleName","count")
+dataM$count[dataM$count>1]=1
+countsL<-split(dataM$count,dataM$sampleName)
+counts<-sapply(countsL,sum)
+df<-data.frame(sampleName=names(counts),otuCounts=counts)
+merged<-merge(df,mdS,by.x="sampleName",by.y="Genotype")
+
+ggplot(merged,aes(Population))+geom_bar()+theme(axis.text.x = element_text(angle = 90))
+years<-unique(merged$Year)
+sampleYear<-split(merged$Year,merged$Population)
+sampleYearCount<-lapply(sampleYear,function(x){table(factor(as.character(x), levels = sort(years)))})
+sampleYearDF<-do.call("rbind",sampleYearCount)
+```
+
+```{r, echo=FALSE}
+kable(sampleYearDF,caption="Sample counts") %>% kable_styling("striped") %>% scroll_box(width = "100%")
+
+```
+
+```{r plot basic stats, echo=FALSE, message=FALSE, warning=FALSE}
+
+pheatmap(sampleYearDF,cluster_rows = F,cluster_cols = F)
+
+p<-ggplot(merged,aes(Period,otuCounts))
+p<-p+geom_violin()
+p<-p+ggtitle("Number of distinct OTUs without filtering over time")
+p
+
+p<-ggplot(merged,aes(Population,otuCounts))
+p<-p+geom_violin()
+p<-p+ggtitle("Number of distinct OTUs per population")
+p<-p+theme(axis.text.x = element_text(angle = 90))
+p
+
+p<-ggplot(merged,aes(museum,otuCounts))
+p<-p+geom_violin()
+p<-p+ggtitle("Number of distinct OTUs per population")
+p<-p+theme(axis.text.x = element_text(angle = 90))
+p
+```
+
+
+The GATK analysis resulted in 46 sites that could be further filtered into 12 SNPs that are present in raw.g5mac3dp10.recode.vcf. Further filtering into 7 SNPs based on MAF of 0.05 might be too restrictive since commonly oberved variance loci are lost, especially since they are the only ones that have phenotypic changes. Based on their combinations, we collapsed the alleles (OTUs) and in the majority of the cases there were to the most 2 main alleles, indicating a monoallelic MHC site. The distribution of allele frequencies also shows a distribution expected of a monoallelic site.
+
+
+```{r warning = FALSE, message=FALSE,include = FALSE,echo=FALSE}
+
+inDir="../results/210813_miseq_AR.bwa"
+
+vcf_file<-"../results/finalVCF/raw.g5mac3dp10.recode.vcf"
+#vcf_file<-paste0(projectdir,"/results/finalVCF/DP10g95maf05noneg.recode.vcf")
+vcf <- read.vcfR( vcf_file, verbose = FALSE )
+
+positions<-as.numeric(vcf@fix[,2])
+#positionsLong<-c(95,96,99,positions,249,250,274,275,277,278,279)
+
+results<-list()
+files<-list.files(inDir,pattern=".sorted.bam",full.names=T)
+files<-files[!grepl("bai",files)]
+outFile<-paste0(RobjectsDir,"OTUs_",length(positions),"SNPs.Rdata")
+if(!file.exists(outFile)){
+  for(file in files){
+  	sampleName<-gsub("_.*","",basename(file))
+  	cat(".")
+  	aln <- scanBam(file)
+  	seqs<-aln[[1]]$seq
+  	seqs<-seqs[width(seqs)==282]
+  	short<-sapply(seqs,function(x){as.character(x[positions])})
+  	results[[sampleName]]<-short
+  }
+  save(results,file=outFile)
+} else {load(outFile)}
+
+OTUs<-unlist(results)
+df<-data.frame(OTU=OTUs,sampleName=rep(names(results),times=sapply(results,length)))
+df$count<-1
+dfAgg<-aggregate(df$count,list(OTU=df$OTU,sampleName=df$sampleName),sum)
+colnames(dfAgg)<-c("OTU","sampleName","value")
+
+df<-dcast(dfAgg, OTU ~ sampleName, value=value,fill=0)
+row.names(df)<-df[,1]
+df<-df[,-1]
+df<-df[order(rowSums(df),decreasing=T),]
+dfSum<-data.frame(OTU=paste0("Lisp_",1:dim(df)[1]),total=rowSums(df))
+dfWeb<-cbind(dfSum,df)
+```
+```{r, echo=FALSE}
+kable(dfWeb[1:15,],caption="Top 10 OTUs") %>% kable_styling("striped") %>% scroll_box(width = "100%")
+
+```
+
+```{r merge_with_annotation, message=FALSE, warning=FALSE, include=F}
+dfShort<-df[,!grepl("neg",colnames(df))]
+
+sampleNames<-colnames(dfShort)
+#sampleNames<-gsub("^X","",sampleNames)
+sampleNames<-gsub("-","_",sampleNames)
+sampleNamesShort<-gsub("_.*","",sampleNames)
+sampleNamesShort<-sampleNamesShort[!grepl("negative",sampleNamesShort)]
+tableSamples<-table(sampleNamesShort)
+dups<-names(tableSamples)[tableSamples>1]
+for(dup in dups){
+ 
+  sampleNames[grepl(paste0(dup,"_2"),sampleNames)]=paste0(dup,"b")
+  sampleNames[grepl(paste0(dup,"$"),sampleNames)]=paste0(dup,"a")
+}
+
+sampleNames<-gsub("_S.*","",sampleNames)
+sampleNames[!sampleNames %in% md$Genotype]
+
+colnames(dfShort)<-sampleNames
+dataT<-t(dfShort)
+
+dataTS<-dataT
+
+mdS<-md[,c(6,9,10,11,15,16)]
+merged<-merge(dataTS,mdS,by.x=0,by.y="Genotype")
+row.names(merged)<-merged[,1]
+merged<-merged[,-1]
+
+comparisons<-c("Population","Period","Chytrid.Response.Group","Population_Period")
+merged$Population_Period<-apply(merged,1,function(x){paste0(x["Population"],"_",x["Period"])})
+
+```
+
+The analysis onwards will be performed only on the haplotypes which are present at least 10 times in at least 3 populations. We also eliminated samples with fewer than 10 OTUs.
+
+```{r warning = FALSE, message=FALSE, echo=FALSE}
+
+htClean<-row.names(dfWeb)[apply(dfWeb,1,function(x){sum(ifelse(x>10,1,0))})>3]
+
+#eliminate samples with less than 10 OTUs
+eliminateSmallSamples<-names(sort(rowSums(merged[,1:72])))[1:3]
+
+mergedShort<-merged[!(row.names(merged) %in% eliminateSmallSamples),]
+
+freqs<-mergedShort[,colnames(merged) %in% htClean]
+freqs<-apply(freqs,1,function(x){x/sum(x)})
+freqsNum<-as.numeric(freqs)
+freqsNum<-freqsNum[freqsNum>0]
+qplot(freqsNum)+ylab("Frequencies of independent OTUs per sample.")
+```
+The majority of OTUs belong to 12 haplotypes.
+```{r plot_why_7, echo=F, message=FALSE, warning=FALSE}
+haplotypes<-colSums(merged[,1:72])
+hcounts<-haplotypes
+dM<-data.frame(haplotypes=names(haplotypes)[1:20],counts=hcounts[1:20])
+dM$haplotypes<-factor(dM$haplotypes,levels=names(haplotypes))
+ggplot(dM,aes(haplotypes,counts))+geom_col()+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+scale_y_log10()
+```
+
+Clean up the haplotypes where there are >2 per individual.
+
+```{r warning = FALSE, message=FALSE,echo=F}
+
+#first clean up the frequencies
+temp<-freqs
+cutoff<-0.10
+temp[temp<cutoff]=0
+#eliminate all samples that are not top 2, recalculate frequencies
+freqsClean<-apply(temp,2,function(x){
+  n=length(x>cutoff);
+  if(n>2){
+    x[order(x)[1:c(length(htClean)-2)]]=0
+  }
+  x=x/sum(x)
+  x
+})
+
+freqsClean[freqsClean<cutoff]=0
+freqsClean[freqsClean>(1-cutoff)]=2
+freqsClean[freqsClean>cutoff&freqsClean<(1-cutoff)]=1
+min(colSums(freqsClean))
+max(colSums(freqsClean))
+```
+
+
+```{r warning = FALSE, message=FALSE,echo=F}
+
+pcaScores<-princomp(t(freqsClean))
+heterozygosityIx<-apply(freqsClean,2,heterozygosity)
+dataM<-data.frame(pca1=pcaScores$scores[,1],pca2=pcaScores$scores[,2],heterozygosity=heterozygosityIx,sampleNames=colnames(freqsClean),population=mergedShort$Population)
+dataMloadings<-data.frame(pca1=pcaScores$loadings[,1],pca2=pcaScores$loadings[,2])
+dataMloadings$haplotypes<-dfWeb$OTU[1:snpCount]
+#scores
+p<-ggplot(dataM,aes(pca1,pca2,color=heterozygosity,label=sampleNames))+scale_colour_gradient2(low="darkred",mid="darkgreen",high="darkblue",midpoint=0.75)+geom_jitter(width = 0.03,height=0.03,size=1)+ggtitle("Haplotype composition")
+p
+
+#loadings
+p<-ggplot(dataMloadings,aes(pca1,pca2,label=haplotypes))+geom_text(size=4)
+p
+```
+
+```{r warning = FALSE, message=FALSE,echo=F}
+
+#scores per population
+p<-ggplot(dataM,aes(pca1,pca2,color=heterozygosity,label=sampleNames))+scale_colour_gradient2(low="darkred",mid="darkgreen",high="darkblue",midpoint=0.75)+geom_text(size=2)+facet_wrap(~population,nrow=3)
+p
+
+```
+
+```{r warning = FALSE, message=FALSE,echo=F,fig.height = 12}
+#for each population show early/late/etc
+dataM<-data.frame(pca1=pcaScores$scores[,1],pca2=pcaScores$scores[,2],heterozygosity=heterozygosityIx,sampleNames=colnames(freqs),population=mergedShort$Population,period=mergedShort$Period)
+
+populationCounts<-split(dataM$sampleNames,dataM$population)
+popCounts<-sapply(populationCounts,length)
+popCountsDF<-data.frame(population=names(popCounts),counts=as.numeric(popCounts))
+dataM<-merge(dataM,popCountsDF,by.x="population",by.y="population")
+dataM$population_count<-apply(dataM,1,function(x){paste0(x["population"]," (",x["counts"],")")})
+
+
+p<-ggplot(dataM,aes(pca1,pca2,color=heterozygosity))+geom_jitter(width = 0.03,height=0.03,size=1)+scale_colour_gradient2(low="red",mid="darkgreen",high="blue",midpoint=0.75)
+p<-p+facet_grid(vars(population),vars(period))
+p
+
+```
+
+
+Summary of the results per population.
+
+```{r warning = FALSE, message=FALSE,echo=F}
+
+
+merged$newSampleNames<-row.names(merged)
+mergedU<-unique(merged[,c("newSampleNames","Population","Chytrid.Response.Group","Year","museum","Period","Population_Period")])
+top7alleles<-t(freqsClean)
+colnames(top7alleles)<-paste0("Lisp_",1:length(htClean))
+
+mergedS<-mergedU[mergedU$newSampleNames %in% row.names(top7alleles),]
+mergedS<-merge(mergedS,top7alleles,by.x="newSampleNames",by.y=0)
+timeframe<-data.frame(year=sort(unique(mergedS$Year)),Age=rep(c("historic","contemporary"),times=c(8,10)))
+mergedS<-merge(mergedS,timeframe,by.x="Year",by.y="year")  
+mergedS$Population_Period<-apply(mergedS,1,function(x){paste0(x["Population"],"_",x["Period"])})
+mergedS$Population_Age<-apply(mergedS,1,function(x){paste0(x["Population"],"_",x["Age"])})
+
+comparisons<-unique(c(comparisons,"Age","Population_Age"))
+
+
+for(comparison in comparisons){
+  dataL<-split(mergedS[,c(8:(7+length(htClean)))],mergedS[,comparison])
+  dataLSum<-lapply(dataL,colSums)
+  #dataLSum<-lapply(dataL,function(x){x[x>0]=1;colSums(x)})
+  tempDF<-do.call("rbind",dataLSum)
+  temp<-t(tempDF)
+  freq_colnames<-c(colnames(temp),paste0(colnames(temp),"_freq"))
+  temp<-cbind(temp,apply(temp,2,function(x){signif(x/sum(x),digits=2)}))
+  colnames(temp)<-freq_colnames
+  #out<-apply(temp,2,function(x){signif(x/sum(x),digits=3)})
+  write.table(temp[1:7,],paste0(tableDir,comparison,".allele_counts.txt"),col.names=NA,quote=F,sep="\t")
+  #dataLSum<-lapply(dataL,function(x){x[x>0]=1;colSums(x)})
+  temp<-temp<-t(tempDF)/2
+  freq_colnames<-c(colnames(temp),paste0(colnames(temp),"_freq"))
+  temp<-cbind(temp,apply(temp,2,function(x){signif(x/sum(x),digits=2)}))
+  colnames(temp)<-freq_colnames
+  write.table(temp[1:7,],paste0(tableDir,comparison,".individuals_with_allele.txt"),col.names=NA,quote=F,sep="\t")
+}
+
+```
+
+Distribution of haplotypes on the map of the terrain. 
+
+```{r warning = FALSE, message=FALSE,echo=F}
+
+#googleApiKey="AIzaSyBSmpaRbrhnuT8WW4vbjv_gOAs6fQJbCyE"
+#register_google(key=googleApiKey,write=T)
+
+
+coords<-read.csv(paste0(annotationDir,"Tfrog_sites1.csv"))
+
+mapMinLat<-min(coords$Latitude)-0.12
+mapMinLong<-min(coords$Longitude)-0.12
+mapMaxLat<-max(coords$Latitude)+0.12
+mapMaxLong<-max(coords$Longitude)+0.12
+
+ph_basemap <- get_map(location=c(mapMinLong,mapMinLat,mapMaxLong,mapMaxLat), zoom=10, maptype = 'terrain-background', source = 'stamen')
+
+
+#for each location prepare the haplotype counts based on individuals that have them
+haplotypeNo=12
+mergedSpatial<-unique(mergedS[mergedS$Population %in% coords$Site,])
+
+#split by Population
+mergedSpatialL<-split(mergedSpatial,mergedSpatial$Population)
+
+#count the haplotypes
+#matCounts<-lapply(mergedSpatialL,function(x){table(factor(as.character(x$OTU), levels = topN))})
+matCounts<-lapply(mergedSpatialL,function(x){colSums(x[,8:c(7+length(htClean))])})
+matCountsDF<-do.call("rbind",matCounts)/2
+#do the table according to a factor
+
+
+mergedCoords<-merge(coords,matCountsDF,by.x="Site",by.y=0)
+
+p <- ggmap(ph_basemap)
+p <- p+geom_scatterpie(aes(x=Longitude, y=Latitude),
+                    data=mergedCoords, cols=paste0("Lisp_",1:12), color=NA) + scale_fill_manual(values=brewer.pal(12,"Paired"))
+p <- p+geom_text(mergedCoords,mapping=aes(x=Longitude, y=Latitude,label=Site),nudge_y = 0.06)
+p <-p+ggtitle("All populations")
+p
+
+for(age in unique(mergedSpatial$Age)[2:1]){
+  mergedSpatialSub<-mergedSpatial[mergedSpatial$Age %in% age,]
+  mergedSpatialL<-split(mergedSpatialSub,mergedSpatialSub$Population)
+  matCounts<-lapply(mergedSpatialL,function(x){colSums(x[,8:c(7+length(htClean))])})
+  matCountsDF<-do.call("rbind",matCounts)/2
+  mergedCoords<-merge(coords,matCountsDF,by.x="Site",by.y=0)
+  
+  p <- ggmap(ph_basemap)
+  p <- p+geom_scatterpie(aes(x=Longitude, y=Latitude),
+                      data=mergedCoords, cols=paste0("Lisp_",1:12), color=NA) + scale_fill_manual(values=brewer.pal(12,"Paired"))
+  p <- p+geom_text(mergedCoords,mapping=aes(x=Longitude, y=Latitude,label=Site),nudge_y = 0.06)
+  p <-p+ggtitle(age)
+  print(p)
+}
+  
+
+
+```
+
+
+```{r warning = FALSE, message=FALSE,echo=F}
+
+#modify this bit so that it corresponds to number of individuals with the haplotype, not reads 
+haplotypeNo=12
+
+topN<-names(sort(table(mergedU$OTU),decreasing=T)[1:haplotypeNo])
+topN<-names(haplotypes)[1:haplotypeNo]
+#extract sequences
+seqsL<-DNAStringSet()
+fastaOri<-readDNAStringSet("mhc282.fasta")
+#for each in topN modify
+for(i in 1:haplotypeNo){
+  seqsL[[i]]<-replaceLetterAt(fastaOri[[1]], positions, topN[i])
+}
+names(seqsL)<-paste0("haplotype_",1:haplotypeNo)
+protSeq<-translate(subseq(seqsL,2,280))
+
+msaR(protSeq)
+msaR(seqsL)
+
+```
+
+
